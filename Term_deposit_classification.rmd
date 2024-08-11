@@ -1,0 +1,1001 @@
+---
+title: "Who wants a deposit?"
+output: pdf_document
+date: "2024-01-19"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Introduction
+
+The data we will use is related to marketing campaign of Portuguese banking. The data was collected in 2008-2010 when the big financial crisis happened. Our goal in the project is to find out if the client will open a deposit. In dataset it is marked by variable y which has values yes (if person opens a account) and no (in opposite). We obtained the data from Kaggle.com (<https://www.kaggle.com/datasets/alexkataev/bank-marketing-data-set?fbclid=IwAR0H7PwD-OyhDKk14-ORzLdXEpEgff5vO_7Zt2vVSDhJvwZFFFBWxx-2eKI>).
+
+The campaigns were run by Portuguese institution and they were based on phone calls. Often it was needed to contact a client several times for instance to find out of a person subscribed a product. We notice we have both numeric and categorical types of data.
+
+# Data's description
+
+We can categorize input variables into four groups:
+
+**Bank client data -- type and description**
+
+1.  age (numeric) -- specifies age of client
+
+2.  job type of job (categorical) -- gives information about person's work
+
+3.  marital (categorical) - marital status
+
+4.  education (categorical) -- shows level of education
+
+5.  default (categorical) -- checks if a client has a credit default earlier
+
+6.  housing (categorical) - checks if a client has a housing loan
+
+7.  loan (categorical) -- has a client a personal loan
+
+**Related with the last contact of the current campaign**
+
+1.  contact (categorical) -- shows a type of contact
+
+2.  month (categorical) -- in which month of the year the last contact occurred
+
+3.  day_of_week (categorical) - in which day of the week the last contact occurred
+
+4.  duration: (numeric) - last contact duration, in seconds.
+
+**Other attributes**
+
+1.  campaign client (numeric, includes last contact) - number of contacts performed during this campaign and for this
+
+2.  pdays (numeric; 999 means client was not previously contacted) - number of days that passed by after the client was last contacted from a previous campaign
+
+3.  previous (numeric) - number of contacts performed before this campaign and for this client
+
+4.  poutcome (categorical) - outcome of the previous marketing campaign
+
+**Social and economic context attributes**
+
+1.  emp.var.rate (numeric) - employment variation rate - quarterly indicator
+
+2.  cons.price.idx (numeric) - consumer price index, adequately scaled Portuguese inflation rate - monthly indicator
+
+3.  cons.conf.idx (numeric) - consumer confidence index - monthly indicator
+
+4.  euribor3m (numeric) - euribor 3 month rate - daily indicator
+
+5.  nr.employed (numeric) - number of employees altogether - quarterly indicator
+
+**Output variable (desired target)**
+
+1.  y (binary: 'yes','no') - has the client subscribed a term deposit
+
+# The data
+
+In this section we are going to get to know more about the data.
+
+Used libraries
+
+```{r, message=FALSE, warning=FALSE}
+library(dplyr)
+library(caret)
+library(readr)
+library(tidymodels)
+library(corrplot)
+library(ggplot2)
+library(gmodels)
+library(neuralnet)
+library(C50)
+library(rpart)
+library(randomForest)
+library(pROC)
+```
+
+Firstly we load the dataset then we check names of columns. We also use function summary to check properties of our data.
+
+```{r}
+df<- read.csv("https://raw.githubusercontent.com/StanislawC/bank-marketing/main/bank-additional-full.csv", sep = ";")
+colnames(df)
+summary(df)
+```
+
+Since we want to predict whether the client will open a deposit we are going to clean and make some changes to the dataset. It is worth to mentioning that if variable duration is equal 0 then y is equal no. Therefore once the phone call is completed y is known, we should not use this variable then. We cannot reject any variable now firstly we need to do analysis.
+
+# Data cleaning
+
+## Missing values
+
+To look for NaNs we use table function for each variable. Due to it we also have a better look at data set.
+
+```{r}
+table(df$job)
+table(df$default)
+table(df$campaign)
+table(df$pdays)
+table(df$previous)
+table(df$poutcome)
+table(df$marital)
+table(df$education)
+table(df$housing)
+table(df$loan)
+table(df$contact)
+table(df$month)
+table(df$y)
+```
+
+Conclusions:
+
+-   Yes to no ratio for target variable is equal $\frac{4640}{36548}=0,127$. We should consider upsampling the set before making models.
+
+-   We see value "unknown" for a lot of categorical data. We can consider them as missing values and just delete it or leave it as they are. We choose first option and assume they are missing so we will delete this values. However before we do it let's select columns for further work. It allows us of keeping more data.
+
+Now we can drop some columns: duration (strictly related with y), default (only 3 yes), pdays (weird 999 value), previous (related with poutcome). We also see the variable month do not help when year is unknown. It is also related with economical features.
+
+```{r}
+df <- subset(df, select = -duration) 
+df <- subset(df, select = -pdays)
+df <- subset(df, select = -previous)
+df <- subset(df, select = -default)
+df <- subset(df, select = -month)
+```
+
+Now we delete "unknown" values.
+
+```{r}
+df <- filter(df, job!= "unknown")
+df <- filter(df, marital!= "unknown")
+df <- filter(df, education!= "unknown")
+df <- filter(df, housing!= "unknown")
+df <- filter(df, loan!= "unknown")
+```
+
+# Data visualization
+
+Now let's take a look at percentage representation of positive and negative answers for some variables.
+
+```{r, echo=FALSE}
+df %>%
+  count(job, y) %>% 
+  group_by(job) %>%
+  mutate(percentage = n / sum(n)*100) %>%
+  ggplot(aes(x = job, y = percentage, fill = y)) +
+  geom_col(position = "dodge2")  +
+  geom_text(aes(label = round(percentage,2)),position=position_dodge2(width=0.9),vjust=-0.25) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+df %>%
+  count(education, y) %>% 
+  group_by(education) %>%
+  mutate(percentage = n / sum(n)*100) %>%
+  ggplot(aes(x = education, y = percentage, fill = y)) +
+  geom_col(position = "dodge2")  +
+  geom_text(aes(label = round(percentage,2)),position=position_dodge2(width=0.9),vjust=-0.25) + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+df %>% 
+  count(poutcome, y) %>% 
+  group_by(poutcome) %>%
+  mutate(percentage = n / sum(n)*100) %>%
+  ggplot(aes(x = poutcome, y = percentage, fill = y)) +
+  geom_col(position = "dodge2")  +
+  geom_text(aes(label = round(percentage,2)),position=position_dodge2(width=0.9),vjust=-0.25) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+df %>% 
+  count(age, y) %>% 
+  group_by(age) %>%
+  mutate(percentage = n / sum(n)*100) %>%
+  ggplot(aes(x = age, y = percentage, fill = y)) +
+  geom_col(position = "dodge2") + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+df %>% 
+  count(loan, y) %>% 
+  group_by(loan) %>%
+  mutate(percentage = n / sum(n)*100) %>%
+  ggplot(aes(x = loan, y = percentage, fill = y)) +
+  geom_col(position = "dodge2")  +
+  geom_text(aes(label = round(percentage,2)),position=position_dodge2(width=0.9),vjust=-0.25) + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+Now we plot the instability for the economic variables. We can easily there was harsh time then. We identify index as another phone call.
+
+```{r, echo=FALSE}
+len <- length(df$age)
+ggplot(data = df, mapping = aes(x = c(1:len)/len, y = cons.price.idx)) + 
+  geom_point(aes(colour = "smooth" )) +
+  labs(x = "Index", 
+       y = "CPI", 
+       title = "CPI vs index")+
+  theme(legend.position="none")
+
+ggplot(data = df, mapping = aes(x = c(1:len)/len, y = euribor3m)) + 
+  geom_point(aes(colour = "smooth" )) +
+  labs(x = "Index", 
+       y = "euribor", 
+       title = "euribor vs index")+
+  theme(legend.position="none")
+```
+
+For economic variables we can make correlation matrix. It could be seen that many of the variables are correlated.
+
+```{r}
+a1 <- subset(df, select = c("emp.var.rate","cons.price.idx", "cons.conf.idx", "euribor3m",
+"nr.employed"))
+
+corrplot(cor(a1), method = "number")
+```
+
+# Models
+
+In this chapter we consider different machine learning models. The most important score for us is AUC (area under curve). However we will also look at Accuracy and sensitivity (it may be crucial because we want to find a lot of clients but we want to reduce phones with negative result). AUC is a compromise between Accuracy and Sensitivity.
+
+```{r, echo=FALSE}
+sensitivity = function(pred, test)
+{
+  sum1 <- 0
+  sum2 <- 0
+  for (i in 1:length(pred))
+  {
+    if (pred[i] == 1 & test[i] ==1)
+    {
+      sum1 <- sum1 + 1
+    }
+    if (test[i] ==1)
+    {
+      sum2 <- sum2 +1
+    }
+  }
+  return (sum1/sum2)
+}
+
+sensitivity2 = function(pred, test)
+{
+  sum1 <- 0
+  sum2 <- 0
+  for (i in 1:length(pred))
+  {
+    if (pred[i] == "yes" & test[i] == "yes")
+    {
+      sum1 <- sum1 + 1
+    }
+    if (test[i] == "yes")
+    {
+      sum2 <- sum2 +1
+    }
+  }
+  return (sum1/sum2)
+}
+
+accuracy2 = function(pred, test)
+{
+  sum <- 0
+  for (i in 1:length(pred))
+  {
+    if (pred[i] == test[i])
+    {
+      sum <- sum + 1
+    }
+  }
+  return (sum/length(pred))
+}
+```
+
+## Preprocessing
+
+To obtain only numerical values we use self written function that makes dummy variables. It is crucial to make logistic regression and neural network.
+
+```{r}
+td <- df
+df_dummy <- td %>%                                    
+  mutate(y = if_else(td$y == "yes",1,0)) %>%
+  mutate(JobAdmin = if_else(td$job == "admin.",1,0)) %>%# work:
+  mutate(JobBlue = if_else(td$job == "blue-collar",1,0)) %>%
+  mutate(JobEntrep = if_else(td$job == "entrepreneur",1,0)) %>%
+  mutate(JobHaus = if_else(td$job == "housemaid",1,0)) %>%
+  mutate(JobManagment = if_else(td$job == "management",1,0)) %>%
+  mutate(JobRetired = if_else(td$job == "retired",1,0)) %>%
+  mutate(JobSelf = if_else(td$job == "self-employed",1,0)) %>%
+  mutate(JobServices = if_else(td$job == "services",1,0)) %>%
+  mutate(JobStudent = if_else(td$job == "student",1,0)) %>%
+  mutate(JobTechnican = if_else(td$job == "technician",1,0)) %>%
+  mutate(JobUnemployed = if_else(td$job == "unemployed",1,0)) %>% 
+  mutate(MaritalDivorce = if_else(td$marital == "divorced", 1, 0)) %>%
+  mutate(MaritalMarried = if_else(td$marital == "married", 1, 0)) %>%
+  mutate(MaritalSingle = if_else(td$marital == "single", 1, 0)) %>% 
+  mutate(Edu4y = if_else(td$education == "basic.4y", 1, 0)) %>%#education:
+  mutate(Edu6y = if_else(td$education == "basic.6y", 1, 0)) %>%
+  mutate(Edu9y = if_else(td$education == "basic.9y", 1, 0)) %>%
+  mutate(EduHS = if_else(td$education == "high.school", 1, 0)) %>%
+  mutate(EduIlliterate = if_else(td$education == "illiterate", 1, 0)) %>%
+  mutate(EduCourse = if_else(td$education == "professional.course", 1, 0)) %>%
+  mutate(EduUniDegree = if_else(td$education == "university.degree", 1, 0)) %>%
+  mutate(HousYes = if_else(td$housing == "yes", 1, 0)) %>% #house:
+  mutate(HousNo = if_else(td$housing == "no", 1, 0)) %>%
+  mutate(LoanYes = if_else(td$loan == "yes", 1, 0)) %>% #loan:
+  mutate(LoanNo = if_else(td$loan == "no", 1, 0)) %>%
+  mutate(ContactCellular = if_else(td$contact == "cellular", 1, 0)) %>% #contact:
+  mutate(ContactTelephone = if_else(td$contact == "telephone", 1, 0)) %>%
+  mutate(PrevFailure = if_else(td$poutcome == "failure", 1, 0)) %>%# poutcome
+  mutate(PrevNone = if_else(td$poutcome == "nonexistent", 1, 0)) %>%
+  mutate(PrevSuccess = if_else(td$poutcome == "success", 1, 0)) %>%
+  mutate(Mon = if_else(td$day_of_week == "mon", 1, 0)) %>%
+  mutate(Thu = if_else(td$day_of_week == "thu", 1, 0)) %>%
+  mutate(Wed = if_else(td$day_of_week == "wed", 1, 0)) %>%
+  mutate(Tue = if_else(td$day_of_week == "tue", 1, 0)) %>%
+  mutate(Fri = if_else(td$day_of_week == "fri", 1, 0)) %>%
+  dplyr::select(c(y, age, JobAdmin, JobBlue, JobEntrep, JobHaus, JobManagment, JobRetired, 
+                  JobSelf,
+                  JobServices, JobStudent, JobTechnican, #JobUnemployed,
+                  MaritalDivorce, MaritalMarried, #MaritalSingle,
+                  Edu4y, Edu6y, Edu9y, EduHS, EduCourse, EduUniDegree,# EduIlliterate,
+                  HousYes,# HousNo,
+                  LoanYes,# LoanNo, 
+                  ContactCellular, #ContactTelephone, 
+                  Mon, Thu, Wed, Tue, #Fri
+                  campaign, PrevFailure, PrevSuccess,# PrevNone,
+                  emp.var.rate, 
+                  cons.price.idx, 
+                  cons.conf.idx,
+                  euribor3m, 
+                  nr.employed
+  ))
+```
+
+Making train and test sets.
+
+```{r}
+set.seed(1)
+train_indices <- createDataPartition(df_dummy$y, p=.8, list = FALSE)
+train_df <- df_dummy[train_indices, ]
+test_df <- df_dummy[-train_indices, ]
+```
+
+MinMax nomalization of the sets.
+
+```{r}
+df.maxs <- apply(train_df, 2, max)
+df.mins <- apply(train_df, 2, min)
+# Rescale the train set:
+train_df.sc <- as.data.frame(scale(train_df, center = df.mins,
+                            scale = df.maxs - df.mins))
+# Rescale the test set:
+test_df.sc <- as.data.frame(scale(test_df, center = df.mins,
+                                   scale = df.maxs - df.mins))
+```
+
+Making the target variable as factor for upsampling with regard to y.
+
+```{r}
+train_df.sc$y <- as.factor(train_df.sc$y)
+```
+
+Because our data is imbalanced it is recommended to perform upsampling.
+
+```{r}
+set.seed(1)
+train_df.sc.up <- upSample(x = train_df.sc[, -1], y = train_df.sc$y, yname = "y")
+table(train_df.sc.up$y)
+```
+
+## Logistic regession
+
+Firstly we check a full model. However it is easy to see it does not work well. So we will try to improve it by backward selection. We will skip a looking for model process and show a final model.
+
+```{r}
+set.seed(1)
+glm1 <- glm(y~.-1, data = train_df.sc.up, family = "binomial")
+summary(glm1)
+```
+
+```{r}
+set.seed(1)
+glm14 <- glm(y~.-JobSelf-JobAdmin-age-JobManagment-Thu-HousYes-MaritalDivorce-LoanYes-
+               nr.employed-MaritalMarried-Tue-JobHaus-JobEntrep-JobTechnican-1, data = train_df.sc.up, 
+family = "binomial")
+summary(glm14)
+```
+
+Now we will take a look at scores for final model (glm14).
+
+```{r}
+fitted.results <- predict(glm14, newdata=test_df.sc,type='response')
+fitted.results <- ifelse(fitted.results > 0.5,1,0)
+accuracy2(fitted.results, test_df.sc$y)
+sensitivity(fitted.results, test_df.sc$y)
+CrossTable(test_df.sc$y, fitted.results,
+           prop.chisq = FALSE, prop.c = FALSE, prop.r = FALSE)
+```
+
+```{r, message=FALSE}
+roc_score_glm=roc(response = test_df.sc$y, predictor = fitted.results)
+auc(roc_score_glm)
+```
+
+We can see the results for logistic regression:
+
+-   $accuracy = 0.7878$
+
+-   $sensitivity=0.6849$
+
+-   $AUC=0.7431$
+
+## Neural network
+
+To make a neural network faster we perform downsapling instead of (shown above) upsampling.
+
+```{r}
+train_df.sc.down <- downSample(x = train_df.sc[, -1], y = train_df.sc$y, yname = "y")
+table(train_df.sc.down$y)
+```
+
+Here we construct variable frm which will be useful to shorten neuralnet function.
+
+```{r}
+nm <- names(train_df.sc.down)
+frm <- as.formula(paste("y ~", paste(nm[!nm %in% "y"], collapse = " + ")))
+print(frm)
+```
+
+Very first idea is to take all our data and fit it in the model. With our limited processing resources we have to find a model that is both accurate and compile in relatively reasonable time. Even after taking downsampled set, due to the size of data and number of columns our algorithm do not always converge, so we increase number of steps and take simple model with 1 hidden neuron. Bigger number of hidden neurons in our case lead to lack of convergence, much increased computation time and sometimes worse results. In this case we know that our function is not linear and activation function tanh seems to shorten time we have to wait for instruction to compile. Increasing threshold seems like a solution to our problems with convergence and time, but lead to decrease in accuracy and precision.
+
+```{r}
+set.seed(1)
+nn1 <- neuralnet(frm, data = train_df.sc.down, hidden = 1, threshold = 0.01, 
+stepmax = 1e7, learningrate.factor = list(minus = 0.5, plus = 1.2), 
+act.fct = "tanh", linear.output = FALSE)
+
+pr.nn1 <- compute(nn1,test_df.sc[,-1])
+
+pr.nn1$score <- if_else(max.col(pr.nn1$net.result) == 2, 1, 0)
+```
+
+```{r, message=FALSE}
+#accuracy
+table(pr.nn1$score == test_df.sc$y)[2]/(sum(table(pr.nn1$score == test_df.sc$y)))
+
+sensitivity(pr.nn1$score, test_df.sc$y)
+CrossTable(test_df.sc$y, pr.nn1$score,
+           prop.chisq = FALSE, prop.c = FALSE, prop.r = FALSE, prop.t = TRUE)
+
+roc_score_nn1=roc(response = test_df.sc$y, predictor = pr.nn1$score)
+auc(roc_score_nn1)
+```
+
+We can see the results for neural network:
+
+-   $accuracy = 0.8520$
+
+-   $sensitivity=0.5959$
+
+-   $AUC=0.7405$
+
+Different idea: we only take data that seems reasonable and allow our construct to compute in reasonable amount of time and steps.
+
+```{r}
+set.seed(1)
+nn2 <- neuralnet(y ~ age + PrevSuccess + cons.price.idx + emp.var.rate,
+                 data = train_df.sc.down[,c("y", "age", "PrevSuccess",   
+                                            "cons.price.idx", "emp.var.rate")], 
+                 threshold = 0.05, hidden = c(5,2), linear.output = FALSE, 
+                 stepmax = 1e7)
+                 #act.fct = "tanh", algorithm = "rprop+",
+```
+
+To take more complex model / bigger number of hidden neurons we decided to sacrifice our low threshold. Default model "rprop+" seems to work as fast or faster than other algotirhms that give comparable results.
+
+```{r, message=FALSE}
+set.seed(1)
+pr.nn2 <- compute(nn2, test_df.sc[,c("y", "age", "PrevSuccess", 
+                                     "cons.price.idx", "emp.var.rate")])
+
+pr.nn2$score <- if_else(max.col(pr.nn2$net.result) == 2, 1, 0)
+
+table(pr.nn2$score == test_df.sc$y)
+sum(table(pr.nn2$score == test_df.sc$y))
+table(pr.nn2$score == test_df.sc$y)[2]/sum(table(pr.nn2$score == test_df.sc$y))
+
+sensitivity(pr.nn2$score, test_df.sc$y)
+CrossTable(test_df.sc$y, pr.nn2$score,
+           prop.chisq = FALSE, prop.c = FALSE, prop.r = FALSE, prop.t = TRUE)
+
+roc_score_nn2=roc(response = test_df.sc$y, predictor = pr.nn2$score)
+auc(roc_score_nn2)
+```
+
+We can see the results for neural network 2:
+
+-   $accuracy = 0.8315$
+
+-   $sensitivity=0.6221$
+
+-   $AUC=0.7404$
+
+## Decision tree
+
+For decision tree and random forest we have to change data type to factors.
+
+```{r}
+df$job <- as.factor(df$job)
+df$marital <- as.factor(df$marital)
+df$education <- as.factor(df$education)
+df$housing <- as.factor(df$housing)
+df$loan <- as.factor(df$loan)
+df$contact <- as.factor(df$contact)
+df$day_of_week <- as.factor(df$day_of_week)
+df$poutcome <- as.factor(df$poutcome)
+df$y <- as.factor(df$y)
+```
+
+We split data to train and test sets.
+
+```{r}
+train_df_fct <- df[train_indices, ]
+test_df_fct <- df[-train_indices, ]
+```
+
+Because our data is imbalanced it is recommended to perform upsampling (or downsampling that we made before).
+
+```{r}
+set.seed(1)
+train_up <- upSample(x = train_df_fct[, -ncol(train_df_fct)], 
+                     y = train_df_fct$y, yname = "y")
+table(train_up$y)
+```
+
+To easy check tree potential and importance of variables we use firstly C5.0 library instead of rpart. We make a tree and sum it up.
+
+```{r, message=FALSE}
+set.seed(1)
+tree <- C5.0(train_up[-ncol(train_up)], train_up$y, trials =1)
+
+C5imp(tree)
+
+tree_pred <- predict(tree, test_df_fct)
+accuracy2(tree_pred, test_df_fct$y)
+sensitivity2(tree_pred, test_df_fct$y)
+CrossTable(test_df_fct$y, tree_pred,
+           prop.chisq = FALSE, prop.c = FALSE, prop.r = FALSE)
+
+test_df_fct_ynum <- if_else(test_df_fct$y == "yes",1,0)
+tree_pred_num <- if_else(tree_pred == "yes",1, 0)
+
+roc_score=roc(response = test_df_fct_ynum, predictor = tree_pred_num)
+auc(roc_score)
+```
+
+We can see results for the default C5.0 tree:
+
+-   $accuracy = 0.8132$
+
+-   $sensitivity=0.4737$
+
+-   $AUC=0.6654$
+
+## Random forest
+
+Now we move to random forest model.
+
+```{r, message=FALSE}
+set.seed(1)
+forest <- randomForest(formula = y~., 
+                       data = train_up, 
+                       xtest = test_df_fct[, -ncol(test_df_fct)], 
+                       ytest = test_df_fct$y)
+
+forest_pred <- forest$test$predicted
+
+accuracy2(forest_pred, test_df_fct$y)
+confusionMatrix(data = forest_pred, reference = test_df_fct$y, positive = "yes")
+
+test_df_fct_ynum <- if_else(test_df_fct$y == "yes",1,0)
+forest_pred_num <- if_else(forest_pred == "yes",1, 0)
+roc_score=roc(response = test_df_fct_ynum, predictor = forest_pred_num) 
+auc(roc_score)
+```
+
+We can see results for the default random forest:
+
+-   $accuracy = 0.8749$
+
+-   $sensitivity=0.4909$
+
+-   $AUC=0.7077$
+
+We have quite good scores and the best accuracy so far. However sensitivity is very low.
+
+Therefore we will try to improve results for tree and forest by grid search.
+
+## Hyperparameter tuning - tree
+
+We want to perform a 5-fold cross-validation for the models with chosen parameters.
+
+```{r}
+minsplit = c(10, 20, 40, 100) # Sets for grid search
+cp = c(0.1, 0.01, 0.001, 0.0001)
+maxdepth = c(10, 20, 30)
+
+m <- length(minsplit)
+n <- length(cp)
+o <- length(maxdepth)
+
+# We need a dataframe for results of grid search
+rp_cv_results <- as.data.frame(matrix(rep(0, m*n*o*6), nrow = m*n*o))
+names(rp_cv_results) <- c("minsplit", "cp", "maxdepth", "Accuracy", "Sensitivity", "AUC")
+```
+
+```{r, message=FALSE}
+# Indices for 5 folds
+folds_indices <- createFolds(train_df_fct$y, k = 5) 
+
+for (k in 1:m)  # Grid search for all triple of parameters
+{
+  for (l in 1:n)
+  { 
+    for (q in 1:o)
+    {
+      set.seed(1)
+      index <- (k-1)*n*o + (l-1)*o+q # Row index for dataframe
+      Accuracy <- 0 
+      Sensitivity <- 0
+      AUC <- 0
+      for (i in 1:5) # In this loop we make cross-validation
+      {
+        cv_indices <- c()
+        for (j in 1:5) 
+        { 
+          if (j != i)
+          {
+            cv_indices <- c(cv_indices, unlist(folds_indices[j]))
+          }
+        }
+        train_cv <- train_df_fct[cv_indices, ]
+        test_cv <- train_df_fct[unlist(folds_indices[i]), ]
+        train_cv_up <- upSample(x = train_cv[, -ncol(train_df_fct)], 
+                                y = train_cv$y, yname = "y")
+        
+        rpart_cv <- rpart(formula = y~., 
+                                  data = train_cv_up, 
+                                  method = "class",
+                                  control = rpart.control(
+                                    minsplit = minsplit[k],
+                                    cp = cp[l],
+                                    maxdepth = maxdepth[q]))
+        
+        # We will calculate means of the scores
+        rp_cv_pred <- predict(rpart_cv, test_cv, type = "class")
+        Accuracy <- accuracy2(rp_cv_pred, test_cv$y) + Accuracy
+        Sensitivity <- sensitivity2(rp_cv_pred, test_cv$y) + Sensitivity
+        
+        test_cv_ynum <- if_else(test_cv$y == "yes",1,0)
+        rp_cv_pred_num <- if_else(rp_cv_pred == "yes",1, 0)
+        roc_score=roc(response = test_cv_ynum, 
+                      predictor = rp_cv_pred_num)   
+        AUC <- auc(roc_score) + AUC
+      }
+      Accuracy <- Accuracy/5
+      Sensitivity <- Sensitivity/5
+      AUC <- AUC/5
+      # It is a time to save the results
+      rp_cv_results$minsplit[index] <- minsplit[k]
+      rp_cv_results$cp[index] <- cp[l]
+      rp_cv_results$maxdepth[index] <- maxdepth[q]
+      rp_cv_results$Accuracy[index] <- Accuracy
+      rp_cv_results$Sensitivity[index] <- Sensitivity
+      rp_cv_results$AUC[index] <- AUC
+    }
+  }
+}
+```
+
+We conclude that the most important parameter is cp. Let's perform grid search for cp.
+
+```{r, message=FALSE}
+minsplit = c(20)
+cp = c(0.0005,0.0008, 0.001, 0.0015, 0.003, 0.005)
+maxdepth = c(30)
+
+m <- length(minsplit)
+n <- length(cp)
+o <- length(maxdepth)
+
+rp_cv_results <- as.data.frame(matrix(rep(0, m*n*o*6), nrow = m*n*o))
+names(rp_cv_results) <- c("minsplit", "cp", "maxdepth", "Accuracy", "Sensitivity", "AUC")
+
+folds_indices <- createFolds(train_df_fct$y, k = 5)
+for (k in 1:m)
+{
+  for (l in 1:n)
+  { 
+    for (q in 1:o)
+    {
+      set.seed(1)
+      index <- (k-1)*n*o + (l-1)*o+q
+      Accuracy <- 0 
+      Sensitivity <- 0
+      AUC <- 0
+      for (i in 1:5)
+      {
+        cv_indices <- c()
+        for (j in 1:5)
+        { 
+          if (j != i)
+          {
+            cv_indices <- c(cv_indices, unlist(folds_indices[j]))
+          }
+        }
+        train_cv <- train_df_fct[cv_indices, ]
+        test_cv <- train_df_fct[unlist(folds_indices[i]), ]
+        train_cv_up <- upSample(x = train_cv[, -ncol(train_df_fct)], 
+                                y = train_cv$y, yname = "y")
+        
+        rpart_cv <- rpart(formula = y~., 
+                                  data = train_cv_up, 
+                                  method = "class",
+                                  control = rpart.control(
+                                    minsplit = minsplit[k],
+                                    cp = cp[l],
+                                    maxdepth = maxdepth[q]))
+
+        rp_cv_pred <- predict(rpart_cv, test_cv, type = "class")
+        Accuracy <- accuracy2(rp_cv_pred, test_cv$y) + Accuracy
+        Sensitivity <- sensitivity2(rp_cv_pred, test_cv$y) + Sensitivity
+        
+        test_cv_ynum <- if_else(test_cv$y == "yes",1,0)
+        rp_cv_pred_num <- if_else(rp_cv_pred == "yes",1, 0)
+        roc_score=roc(response = test_cv_ynum, 
+                      predictor = rp_cv_pred_num)   
+        AUC <- auc(roc_score) + AUC
+      }
+      Accuracy <- Accuracy/5
+      Sensitivity <- Sensitivity/5
+      AUC <- AUC/5
+      rp_cv_results$minsplit[index] <- minsplit[k]
+      rp_cv_results$cp[index] <- cp[l]
+      rp_cv_results$maxdepth[index] <- maxdepth[q]
+      rp_cv_results$Accuracy[index] <- Accuracy
+      rp_cv_results$Sensitivity[index] <- Sensitivity
+      rp_cv_results$AUC[index] <- AUC
+    }
+  }
+}
+```
+
+```{r}
+len <- length(rp_cv_results$AUC)
+ggplot(data = rp_cv_results, mapping = aes(x = cp, y = AUC)) + 
+  geom_point() +
+  geom_line(colour = "brown")+
+  labs(x = "cp", 
+       y = "AUC", 
+       title = "AUC vs complexity parameter")
+```
+
+For parameters proposed above ($cp=0.001, minsplit=20, maxdepth=30$) we make a tree model.
+
+```{r, message=FALSE}
+set.seed(1)
+tree_rp <-rpart(y~., train_up, method = "class", 
+                control = rpart.control(cp = 0.001, minsplit = 20))
+rp_predict <- predict(tree_rp, test_df_fct, type = "class")
+plotcp(tree_rp)
+tree_rp$variable.importance
+rpart.plot::rpart.plot(tree_rp)
+
+test_df_fct_ynum <- if_else(test_df_fct$y == "yes",1,0)
+tree_pred_num <- if_else(rp_predict == "yes",1, 0)
+
+roc_score=roc(response = test_df_fct_ynum, predictor = tree_pred_num)
+auc(roc_score)
+
+accuracy2(rp_predict, test_df_fct$y)
+confusionMatrix(data = rp_predict, reference = test_df_fct$y, positive = "yes")
+```
+
+We can see results for the tuned tree:
+
+-   $accuracy = 0.8266$
+
+-   $sensitivity=0.6461$
+
+-   $AUC=0.7481$
+
+## Hyperparameter tuning - forest
+
+Now we will try to improve random forest.
+
+```{r}
+set.seed(1)
+folds_indices <- createFolds(train_df$y, k = 5)
+
+mtry = c(2,3,4,5,7,10)
+ntree = c(30, 50, 80)
+m = length(mtry)
+n = length(ntree)
+
+cv_results_forest <- as.data.frame(matrix(rep(0, m*n*5), nrow = m*n))
+names(cv_results_forest) <- c("mtry", "ntree", "Accuracy", "Sensitivity", "AUC")
+```
+
+```{r, message=FALSE}
+for (k in 1:m)
+{
+  for (l in 1:n)
+  { 
+    set.seed(1)
+    index <- (k-1)*n+l
+    Accuracy <- 0 
+    Sensitivity <- 0
+    AUC <- 0
+    for (i in 1:5)
+    {
+      cv_indices <- c()
+      for (j in 1:5)
+      { 
+        if (j != i)
+        {
+          cv_indices <- c(cv_indices, unlist(folds_indices[j]))
+        }
+      }
+      train_cv <- train_df_fct[cv_indices, ]
+      test_cv <- train_df_fct[unlist(folds_indices[i]), ]
+      train_cv_up <- upSample(x = train_cv[, -ncol(train_df_fct)], 
+                              y = train_cv$y, yname = "y")
+      
+      forest_cv <- randomForest(formula = y~., 
+                                data = train_cv_up, 
+                                xtest = test_cv[, -ncol(test_cv)], 
+                                ytest = test_cv$y, 
+                                mtry = mtry[k],
+                                ntree = ntree[l])
+      forest_cv_pred <- forest_cv$test$predicted
+      Accuracy <- accuracy2(forest_cv_pred, test_cv$y) + Accuracy
+      Sensitivity <- sensitivity2(forest_cv_pred, test_cv$y) +       Sensitivity
+      
+        test_cv_ynum <- if_else(test_cv$y == "yes",1,0)
+        forest_cv_pred_num <- if_else(forest_cv_pred == "yes",1, 0)
+        roc_score=roc(response = test_cv_ynum, 
+                      predictor = forest_cv_pred_num)   
+        AUC <- auc(roc_score) + AUC
+    }
+    Accuracy <- Accuracy/5
+    Sensitivity <- Sensitivity/5
+    AUC <- AUC/5
+    cv_results_forest$mtry[index] <- mtry[k]
+    cv_results_forest$ntree[index] <- ntree[l]
+    cv_results_forest$Accuracy[index] <- Accuracy
+    cv_results_forest$Sensitivity[index] <- Sensitivity
+    cv_results_forest$AUC[index] <- AUC
+  }
+}
+```
+
+We conclude that $mtry=2$ is the best for various number of trees. Now we look for optimal ntree parameter.
+
+```{r, message=FALSE}
+set.seed(1)
+folds_indices <- createFolds(train_df$y, k = 5)
+
+mtry = c(2)
+ntree = c(10,20,30,40,50,60,80,100,150)
+m = length(mtry)
+n = length(ntree)
+
+cv_results_forest <- as.data.frame(matrix(rep(0, m*n*5), nrow = m*n))
+names(cv_results_forest) <- c("mtry", "ntree", "Accuracy", "Sensitivity", "AUC")
+
+for (k in 1:m)
+{
+  for (l in 1:n)
+  { 
+    set.seed(1)
+    index <- (k-1)*n+l
+    Accuracy <- 0 
+    Sensitivity <- 0
+    AUC <- 0
+    for (i in 1:5)
+    {
+      cv_indices <- c()
+      for (j in 1:5)
+      { 
+        if (j != i)
+        {
+          cv_indices <- c(cv_indices, unlist(folds_indices[j]))
+        }
+      }
+      train_cv <- train_df_fct[cv_indices, ]
+      test_cv <- train_df_fct[unlist(folds_indices[i]), ]
+      train_cv_up <- upSample(x = train_cv[, -ncol(train_df_fct)], 
+                              y = train_cv$y, yname = "y")
+      
+      forest_cv <- randomForest(formula = y~., 
+                                data = train_cv_up, 
+                                xtest = test_cv[, -ncol(test_cv)], 
+                                ytest = test_cv$y, 
+                                mtry = mtry[k],
+                                ntree = ntree[l])
+      forest_cv_pred <- forest_cv$test$predicted
+      Accuracy <- accuracy2(forest_cv_pred, test_cv$y) + Accuracy
+      Sensitivity <- sensitivity2(forest_cv_pred, test_cv$y) +       Sensitivity
+      
+        test_cv_ynum <- if_else(test_cv$y == "yes",1,0)
+        forest_cv_pred_num <- if_else(forest_cv_pred == "yes",1, 0)
+        roc_score=roc(response = test_cv_ynum, 
+                      predictor = forest_cv_pred_num)   
+        AUC <- auc(roc_score) + AUC
+    }
+    Accuracy <- Accuracy/5
+    Sensitivity <- Sensitivity/5
+    AUC <- AUC/5
+    cv_results_forest$mtry[index] <- mtry[k]
+    cv_results_forest$ntree[index] <- ntree[l]
+    cv_results_forest$Accuracy[index] <- Accuracy
+    cv_results_forest$Sensitivity[index] <- Sensitivity
+    cv_results_forest$AUC[index] <- AUC
+  }
+}
+```
+
+```{r}
+len <- length(cv_results_forest$AUC)
+ggplot(data = cv_results_forest, mapping = aes(x = ntree, y = AUC)) + 
+  geom_point() +
+  geom_line(colour = "brown")+
+  labs(x = "ntree", 
+       y = "AUC", 
+       title = "AUC vs number of trees")
+```
+
+We make a random forest for choosen parameters ($ntree=80, mtry=2$).
+
+```{r}
+set.seed(1)
+forest <- randomForest(formula = y~., 
+                       data = train_up, 
+                       xtest = test_df_fct[, -ncol(test_df_fct)], 
+                       ytest = test_df_fct$y, 
+                       ntree = 80,
+                       mtry = 2)
+
+forest_pred <- forest$test$predicted
+
+accuracy2(forest_pred, test_df_fct  $y)
+confusionMatrix(data = forest_pred, reference = test_df_fct$y, positive = "yes")
+
+test_df_fct_ynum <- if_else(test_df_fct$y == "yes",1,0)
+forest_pred_num <- if_else(forest_pred == "yes",1, 0)
+
+roc_score_forest=roc(response = test_df_fct_ynum, predictor = forest_pred_num)
+auc(roc_score_forest)
+```
+
+We can see results for the tuned tree:
+
+-   $accuracy = 0.8695$
+
+-   $sensitivity=0.5639$
+
+-   $AUC=0.7365$
+
+# Conclusions
+
+We have presented a few models and different ways to handle the problem. Now we will sum it up. We have to think what is more important for us. Do we want to reduce marketing costs and make less phone calls but do not find many possible clients. We may also make more but then we risk contact with people that do not want to take part in deposit program. As we state at the very beginnig our mains score is AUC.
+
+Let's remind what values we consider:
+
+-   Logistic regression - for model with significant variables.
+
+-   Neural network - for first (full) model, for second try (when we use only four variables).
+
+-   Decision tree - for tree after hyperparameter tuning.
+
+-   Random forest - for forest after hyperparameter tuning.
+
+| Score       | Logistic regression | Neural network 1 | Neural network 2 | Decision tree | Random forest |
+|------------|------------|------------|------------|------------|------------|
+| Accuracy    | $78.78\%$           | $85.20 \%$       | $83.15 \%$       | $82.66\%$     | $86.95\%$     |
+| Sensitivity | $68.49\%$           | $59.59 \%$       | $62.21 \%$       | $64.61 \%$    | $56.39\%$     |
+| AUC         | $74.31\%$           | $74.05 \%$       | $74.04\%$        | $74.81 \%$    | $73.65\%$     |
+
+It could be seen that all models could be valuable. Therefore the decision is not so simple. After thorough analysis, we have concluded that a decision tree is the most suitable model for our dataset.
